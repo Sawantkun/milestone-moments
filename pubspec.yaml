@@ -1,0 +1,37 @@
+name: milestone_moments
+description: A modern, premium parenting and child development tracker.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.4.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  provider: ^6.1.2
+  shared_preferences: ^2.3.2
+  fl_chart: ^0.69.0
+  flutter_local_notifications: ^18.0.1
+  flutter_timezone: ^1.0.4
+  timezone: ^0.9.4
+  pdf: ^3.11.1
+  printing: ^5.13.2
+  google_fonts: ^6.2.1
+  flutter_animate: ^4.5.0
+  smooth_page_indicator: ^1.1.0
+  intl: ^0.19.0
+  uuid: ^4.5.1
+  path_provider: ^2.1.4
+  permission_handler: ^11.3.1
+  image_picker: ^1.1.2
+  path: ^1.9.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
