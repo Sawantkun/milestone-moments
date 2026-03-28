@@ -1,424 +1,134 @@
+import 'dart:convert';
+import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
+import '../config/env_config.dart';
 import '../models/activity_model.dart';
 
 class AiService {
   static const _uuid = Uuid();
+  static const _baseUrl = 'https://openrouter.ai/api/v1/chat/completions';
 
-  /// Returns a list of age-appropriate activities for a child of [ageMonths].
-  List<ActivityModel> getActivitiesForAge(int ageMonths) {
-    final all = _allActivities();
-    return all.where((a) => ageMonths >= a.ageMinMonths && ageMonths <= a.ageMaxMonths).toList();
+  /// Returns AI-generated age-appropriate activities, falling back to
+  /// hardcoded list if the API call fails.
+  Future<List<ActivityModel>> getActivitiesForAge(int ageMonths) async {
+    try {
+      final response = await http.post(
+        Uri.parse(_baseUrl),
+        headers: {
+          'Authorization': 'Bearer ${EnvConfig.openRouterApiKey}',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({
+          'model': EnvConfig.openRouterModel,
+          'messages': [
+            {
+              'role': 'system',
+              'content':
+                  'You are a child development expert. Return ONLY a valid JSON array of activities. No explanation, no markdown.',
+            },
+            {
+              'role': 'user',
+              'content':
+                  'Generate 5 age-appropriate developmental activities for a $ageMonths-month-old child. '
+                  'Return a JSON array where each object has: title (string), description (string), '
+                  'category (one of: Motor, Language, Social, Cognitive), durationMinutes (number), '
+                  'materials (array of strings), benefits (array of strings).',
+            },
+          ],
+          'max_tokens': 1500,
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        final content =
+            (data['choices'] as List)[0]['message']['content'] as String;
+        final cleaned =
+            content.trim().replaceAll('```json', '').replaceAll('```', '').trim();
+        return (jsonDecode(cleaned) as List)
+            .map((item) => ActivityModel(
+                  id: _uuid.v4(),
+                  title: item['title'] as String,
+                  description: item['description'] as String,
+                  ageMinMonths: ageMonths > 2 ? ageMonths - 2 : 0,
+                  ageMaxMonths: ageMonths + 2,
+                  category: item['category'] as String,
+                  durationMinutes: (item['durationMinutes'] as num).toInt(),
+                  materials: List<String>.from(item['materials'] as List),
+                  benefits: List<String>.from(item['benefits'] as List),
+                ))
+            .toList();
+      }
+    } catch (_) {}
+    return _fallback(ageMonths);
   }
 
-  List<ActivityModel> _allActivities() {
-    return [
-      // 0–3 months
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Tummy Time',
-        description: 'Place your baby on their tummy on a firm, flat surface while you watch. Start with 2–3 minutes and work up to 10–15 minutes several times a day. This strengthens neck and shoulder muscles.',
-        ageMinMonths: 0,
-        ageMaxMonths: 3,
-        category: 'Motor',
-        durationMinutes: 10,
-        materials: ['Soft blanket or play mat'],
-        benefits: ['Strengthens neck muscles', 'Prevents flat head', 'Builds upper body strength'],
-      ),
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'High-Contrast Card Gazing',
-        description: 'Show your newborn simple black-and-white or high-contrast patterns held about 20–30 cm from their face. Their vision is still developing and contrast helps stimulate it.',
-        ageMinMonths: 0,
-        ageMaxMonths: 3,
-        category: 'Cognitive',
-        durationMinutes: 5,
-        materials: ['High-contrast picture cards or printed patterns'],
-        benefits: ['Visual development', 'Focus and tracking', 'Early cognitive stimulation'],
-      ),
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Gentle Baby Massage',
-        description: 'Using baby-safe oil or lotion, gently stroke your baby\'s arms, legs, back, and tummy. Sing a soft song while you do it. This promotes bonding and body awareness.',
-        ageMinMonths: 0,
-        ageMaxMonths: 3,
-        category: 'Social',
-        durationMinutes: 15,
-        materials: ['Baby-safe oil or lotion', 'Soft towel'],
-        benefits: ['Promotes bonding', 'Improves sleep', 'Reduces colic discomfort'],
-      ),
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Talking and Singing',
-        description: 'Narrate your daily activities to your baby and sing simple nursery rhymes. Make eye contact and respond to their coos and babbles as if having a conversation.',
-        ageMinMonths: 0,
-        ageMaxMonths: 3,
-        category: 'Language',
-        durationMinutes: 20,
-        materials: [],
-        benefits: ['Language foundation', 'Social bonding', 'Auditory development'],
-      ),
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Rattle and Sound Tracking',
-        description: 'Gently shake a soft rattle or bell on one side of your baby\'s head, then the other. Watch them turn their head to find the sound source.',
-        ageMinMonths: 1,
-        ageMaxMonths: 3,
-        category: 'Cognitive',
-        durationMinutes: 10,
-        materials: ['Soft rattle', 'Gentle bell'],
-        benefits: ['Auditory tracking', 'Cause and effect understanding', 'Neck muscle exercise'],
-      ),
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Mirror Play',
-        description: 'Hold your baby in front of a baby-safe mirror or hold them while you look together in the bathroom mirror. Talk about what you see: "That\'s you! There\'s your nose!"',
-        ageMinMonths: 2,
-        ageMaxMonths: 3,
-        category: 'Social',
-        durationMinutes: 10,
-        materials: ['Baby-safe mirror or regular mirror'],
-        benefits: ['Self-awareness', 'Social smiling', 'Visual stimulation'],
-      ),
+  /// Returns AI-suggested next milestones for a child based on their age and
+  /// recent milestone history. Falls back to generic suggestions on error.
+  Future<List<String>> generateMilestoneSuggestions({
+    required String childName,
+    required int ageMonths,
+    required List<String> recentMilestones,
+  }) async {
+    try {
+      final milestonesText = recentMilestones.isEmpty
+          ? 'No milestones recorded yet.'
+          : recentMilestones.join(', ');
+      final response = await http.post(
+        Uri.parse(_baseUrl),
+        headers: {
+          'Authorization': 'Bearer ${EnvConfig.openRouterApiKey}',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({
+          'model': EnvConfig.openRouterModel,
+          'messages': [
+            {
+              'role': 'system',
+              'content':
+                  'You are a child development expert. Return ONLY a valid JSON array of strings. No explanation, no markdown.',
+            },
+            {
+              'role': 'user',
+              'content':
+                  '$childName is $ageMonths months old. Recent milestones: $milestonesText. '
+                  'Suggest 4 developmental milestones to watch for next. Return a JSON array of short milestone titles.',
+            },
+          ],
+          'max_tokens': 300,
+        }),
+      );
 
-      // 3–6 months
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Supported Sitting with Toys',
-        description: 'Prop your baby in a sitting position with rolled blankets for support, then place colourful toys just within reach. Encourage them to lean forward and grab.',
-        ageMinMonths: 3,
-        ageMaxMonths: 6,
-        category: 'Motor',
-        durationMinutes: 15,
-        materials: ['Rolled blankets', 'Colourful rattles and soft toys'],
-        benefits: ['Core strength', 'Hand-eye coordination', 'Reaching and grasping'],
-      ),
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Water Play in the Bath',
-        description: 'During bath time, let your baby splash and explore. Pour water gently over their hands and tummy. Use safe bath toys to make it fun.',
-        ageMinMonths: 3,
-        ageMaxMonths: 6,
-        category: 'Cognitive',
-        durationMinutes: 15,
-        materials: ['Baby bath', 'Soft bath toys', 'Cup for pouring'],
-        benefits: ['Sensory exploration', 'Cause and effect', 'Fine motor skills'],
-      ),
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Peekaboo',
-        description: 'Cover your face with your hands or a light cloth, then reveal yourself with a big smile and "Peekaboo!" Repeat. Babies this age find this endlessly entertaining.',
-        ageMinMonths: 3,
-        ageMaxMonths: 6,
-        category: 'Social',
-        durationMinutes: 10,
-        materials: [],
-        benefits: ['Object permanence', 'Social bonding', 'Laughter and joy'],
-      ),
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Texture Discovery Basket',
-        description: 'Fill a small basket with items of different textures — a soft cloth, a smooth wooden block, a crinkle toy, a rubber duck. Let your baby feel each one while you describe the texture.',
-        ageMinMonths: 4,
-        ageMaxMonths: 6,
-        category: 'Cognitive',
-        durationMinutes: 15,
-        materials: ['Small basket', 'Assorted safe textured objects'],
-        benefits: ['Sensory development', 'Fine motor grasping', 'Vocabulary building'],
-      ),
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Bounce and Rhyme',
-        description: 'Sit your baby on your lap facing you and gently bounce them to the rhythm of a rhyme like "Humpty Dumpty" or "Horsey Horsey". Babies love the rhythm and movement.',
-        ageMinMonths: 3,
-        ageMaxMonths: 6,
-        category: 'Language',
-        durationMinutes: 10,
-        materials: [],
-        benefits: ['Rhythm awareness', 'Balance development', 'Language patterns'],
-      ),
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Rolling Practice',
-        description: 'Place your baby on their back with a favourite toy just out of reach to one side to encourage rolling. You can also gently guide the roll by moving their legs over.',
-        ageMinMonths: 4,
-        ageMaxMonths: 6,
-        category: 'Motor',
-        durationMinutes: 10,
-        materials: ['Favourite toy', 'Soft mat'],
-        benefits: ['Rolling milestone', 'Core strength', 'Spatial awareness'],
-      ),
-
-      // 6–12 months
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Stacking Cups',
-        description: 'Show your baby how to stack and knock down colourful cups. Let them do the knocking! The crash is very satisfying. Progress to simple nesting.',
-        ageMinMonths: 6,
-        ageMaxMonths: 12,
-        category: 'Cognitive',
-        durationMinutes: 20,
-        materials: ['Stacking cups set'],
-        benefits: ['Problem solving', 'Fine motor skills', 'Cause and effect understanding'],
-      ),
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'First Words Flash Cards',
-        description: 'Use simple picture cards of everyday objects (dog, cup, ball, car). Show each card, say the word clearly, and wait for a response. React enthusiastically to any attempt.',
-        ageMinMonths: 6,
-        ageMaxMonths: 12,
-        category: 'Language',
-        durationMinutes: 10,
-        materials: ['Baby picture flash cards'],
-        benefits: ['Vocabulary building', 'Word-object association', 'Attention span'],
-      ),
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Crawling Obstacle Course',
-        description: 'Create a simple indoor obstacle course using pillows, rolled blankets, and soft tunnels. Encourage your baby to crawl through and over obstacles.',
-        ageMinMonths: 7,
-        ageMaxMonths: 12,
-        category: 'Motor',
-        durationMinutes: 20,
-        materials: ['Pillows', 'Blankets', 'Soft tunnel (optional)'],
-        benefits: ['Crawling development', 'Problem solving', 'Physical confidence'],
-      ),
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Pot and Spoon Band',
-        description: 'Give your baby a wooden spoon and a metal pot. Let them bang away! Move the pot around so they have to track it and reach for it.',
-        ageMinMonths: 6,
-        ageMaxMonths: 12,
-        category: 'Cognitive',
-        durationMinutes: 15,
-        materials: ['Small metal pot or bowl', 'Wooden spoon'],
-        benefits: ['Cause and effect', 'Grip strength', 'Rhythm and music appreciation'],
-      ),
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Simple Ball Roll',
-        description: 'Sit facing your baby on the floor with legs spread in a V shape. Roll a soft ball gently between you. Clap and cheer when they push it back.',
-        ageMinMonths: 8,
-        ageMaxMonths: 12,
-        category: 'Social',
-        durationMinutes: 15,
-        materials: ['Soft ball'],
-        benefits: ['Turn-taking', 'Eye-hand coordination', 'Social interaction'],
-      ),
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Bedtime Story Routine',
-        description: 'Choose 1–2 board books with simple pictures and text. Read the same books regularly so your baby learns to anticipate pictures. Point to images as you name them.',
-        ageMinMonths: 6,
-        ageMaxMonths: 12,
-        category: 'Language',
-        durationMinutes: 15,
-        materials: ['Board books'],
-        benefits: ['Pre-literacy skills', 'Vocabulary', 'Routine and security'],
-      ),
-
-      // 12–24 months
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Shape Sorter Challenge',
-        description: 'Introduce a shape sorter box with 3–4 basic shapes. Demonstrate pushing the circle through the hole first. Celebrate every success loudly!',
-        ageMinMonths: 12,
-        ageMaxMonths: 24,
-        category: 'Cognitive',
-        durationMinutes: 20,
-        materials: ['Shape sorter toy'],
-        benefits: ['Shape recognition', 'Problem solving', 'Hand-eye coordination', 'Persistence'],
-      ),
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Sensory Bin Exploration',
-        description: 'Fill a shallow bin with dried pasta, rice, or sand. Add small toys to find and cups for scooping. Supervise closely and ensure pieces are large enough to be safe.',
-        ageMinMonths: 12,
-        ageMaxMonths: 24,
-        category: 'Cognitive',
-        durationMinutes: 30,
-        materials: ['Shallow container', 'Dried pasta or rice', 'Small toys', 'Cups and spoons'],
-        benefits: ['Sensory exploration', 'Fine motor development', 'Imaginative play'],
-      ),
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Paint with Fingers',
-        description: 'Use non-toxic washable finger paint on large paper. Let your toddler smear, stamp, and squish. Name the colours as they work.',
-        ageMinMonths: 12,
-        ageMaxMonths: 24,
-        category: 'Cognitive',
-        durationMinutes: 25,
-        materials: ['Non-toxic finger paint', 'Large paper', 'Protective smock', 'Wipeable surface'],
-        benefits: ['Creativity', 'Fine motor skills', 'Colour learning', 'Sensory processing'],
-      ),
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Simple Sorting Game',
-        description: 'Use two bowls and a collection of large red and blue objects. Say "red ones here, blue ones there" and sort together, then let them try.',
-        ageMinMonths: 15,
-        ageMaxMonths: 24,
-        category: 'Cognitive',
-        durationMinutes: 15,
-        materials: ['Two bowls', 'Large coloured blocks or objects'],
-        benefits: ['Colour recognition', 'Categorisation', 'Following instructions'],
-      ),
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Toddler Dance Party',
-        description: 'Put on some upbeat children\'s songs and dance together! Show simple moves and encourage your toddler to copy. Great for rainy day energy release.',
-        ageMinMonths: 12,
-        ageMaxMonths: 24,
-        category: 'Motor',
-        durationMinutes: 20,
-        materials: ['Speaker or phone for music'],
-        benefits: ['Gross motor skills', 'Rhythm', 'Coordination', 'Emotional expression'],
-      ),
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Pretend Play Kitchen',
-        description: 'Set up a small play kitchen or use real pots and spoons. Play "cooking" together — stir the pot, taste the imaginary soup, set the table.',
-        ageMinMonths: 18,
-        ageMaxMonths: 24,
-        category: 'Social',
-        durationMinutes: 30,
-        materials: ['Play kitchen set or real pots', 'Toy food'],
-        benefits: ['Imaginative play', 'Language development', 'Social role play'],
-      ),
-
-      // 24–36 months
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Puzzle Time',
-        description: 'Start with large 4–6 piece wooden puzzles. Guide your child to find edges first, then fill in the middle. Celebrate completions!',
-        ageMinMonths: 24,
-        ageMaxMonths: 36,
-        category: 'Cognitive',
-        durationMinutes: 20,
-        materials: ['Simple wooden puzzle (4–6 pieces)'],
-        benefits: ['Spatial reasoning', 'Patience', 'Fine motor skills', 'Problem solving'],
-      ),
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Playdough Creations',
-        description: 'Use home-made or store-bought playdough to roll snakes, make balls, use cookie cutters, and create simple animals together.',
-        ageMinMonths: 24,
-        ageMaxMonths: 36,
-        category: 'Motor',
-        durationMinutes: 30,
-        materials: ['Playdough', 'Cookie cutters', 'Rolling pin', 'Plastic tools'],
-        benefits: ['Fine motor strength', 'Creativity', 'Concentration', 'Vocabulary'],
-      ),
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Nature Walk and Collect',
-        description: 'Go for a walk and collect interesting natural items — leaves, pinecones, sticks, pebbles. Talk about what you find. Sort and display your collection at home.',
-        ageMinMonths: 24,
-        ageMaxMonths: 36,
-        category: 'Cognitive',
-        durationMinutes: 45,
-        materials: ['Small bag or bucket', 'Comfortable shoes'],
-        benefits: ['Nature awareness', 'Vocabulary building', 'Observation skills', 'Physical activity'],
-      ),
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Counting with Objects',
-        description: 'Use everyday objects like grapes, blocks, or toy cars. Count them together out loud, touching each one. Make counting part of daily routines.',
-        ageMinMonths: 24,
-        ageMaxMonths: 36,
-        category: 'Cognitive',
-        durationMinutes: 10,
-        materials: ['Countable objects (blocks, grapes, buttons)'],
-        benefits: ['Number sense', 'One-to-one correspondence', 'Language', 'Mathematical thinking'],
-      ),
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Puppet Show',
-        description: 'Create simple sock puppets or use toy animals to put on a show. Give each character a different voice. Encourage your child to make their puppets talk.',
-        ageMinMonths: 24,
-        ageMaxMonths: 36,
-        category: 'Language',
-        durationMinutes: 25,
-        materials: ['Old socks', 'Buttons', 'Felt', 'Glue (non-toxic)'],
-        benefits: ['Language expression', 'Storytelling', 'Creativity', 'Emotional development'],
-      ),
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Obstacle Course Outdoors',
-        description: 'Set up a garden obstacle course: hop over a rope, crawl under a table, jump in a hoop, balance on a log. Time them and celebrate improvement.',
-        ageMinMonths: 30,
-        ageMaxMonths: 36,
-        category: 'Motor',
-        durationMinutes: 30,
-        materials: ['Rope', 'Hula hoops', 'Low balance beam or plank'],
-        benefits: ['Gross motor skills', 'Balance', 'Coordination', 'Physical confidence'],
-      ),
-
-      // 36–60 months
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Simple Baking Together',
-        description: 'Let your child help measure, pour, and stir when making muffins or cookies. Give them age-appropriate jobs like pouring pre-measured ingredients.',
-        ageMinMonths: 36,
-        ageMaxMonths: 60,
-        category: 'Cognitive',
-        durationMinutes: 45,
-        materials: ['Simple baking ingredients', 'Child-safe mixing tools', 'Apron'],
-        benefits: ['Maths concepts (measuring)', 'Following instructions', 'Independence', 'Science basics'],
-      ),
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Letter Treasure Hunt',
-        description: 'Hide magnetic letters around the room. Give clues or a simple picture map. When found, name the letter and a word that starts with it.',
-        ageMinMonths: 36,
-        ageMaxMonths: 60,
-        category: 'Language',
-        durationMinutes: 25,
-        materials: ['Magnetic letters or foam letters'],
-        benefits: ['Letter recognition', 'Pre-reading skills', 'Listening and following clues', 'Excitement for literacy'],
-      ),
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Watercolour Painting',
-        description: 'Set up watercolours and good-sized paper. Show how to wet the brush, pick up colour, and paint. Encourage mixing colours to discover new ones.',
-        ageMinMonths: 36,
-        ageMaxMonths: 60,
-        category: 'Cognitive',
-        durationMinutes: 30,
-        materials: ['Child watercolour set', 'Watercolour paper', 'Brushes', 'Water cup'],
-        benefits: ['Creativity', 'Colour science', 'Fine motor control', 'Focus'],
-      ),
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Building Challenges',
-        description: 'Challenge your child to build the tallest tower, a bridge between two chairs, or a house for a toy. Celebrate ingenuity over success.',
-        ageMinMonths: 36,
-        ageMaxMonths: 60,
-        category: 'Cognitive',
-        durationMinutes: 30,
-        materials: ['Building blocks (wooden, LEGO DUPLO)', 'Toy figures'],
-        benefits: ['Engineering thinking', 'Spatial reasoning', 'Persistence', 'Creativity'],
-      ),
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Feelings Charades',
-        description: 'Take turns acting out emotions — happy, sad, surprised, scared, excited — without words. Guess each other\'s emotion. Discuss situations that make you feel that way.',
-        ageMinMonths: 36,
-        ageMaxMonths: 60,
-        category: 'Social',
-        durationMinutes: 20,
-        materials: [],
-        benefits: ['Emotional intelligence', 'Social awareness', 'Communication skills', 'Empathy'],
-      ),
-      ActivityModel(
-        id: _uuid.v4(),
-        title: 'Gardening Basics',
-        description: 'Give your child their own small pot and seeds (sunflower or cress grow quickly). Let them plant, water, and track growth. Draw the plant each week.',
-        ageMinMonths: 48,
-        ageMaxMonths: 60,
-        category: 'Cognitive',
-        durationMinutes: 20,
-        materials: ['Small pot', 'Potting mix', 'Seeds', 'Small watering can'],
-        benefits: ['Responsibility', 'Nature appreciation', 'Science observation', 'Patience'],
-      ),
-    ];
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        final content =
+            (data['choices'] as List)[0]['message']['content'] as String;
+        final cleaned =
+            content.trim().replaceAll('```json', '').replaceAll('```', '').trim();
+        return List<String>.from(jsonDecode(cleaned) as List);
+      }
+    } catch (_) {}
+    return ['First steps', 'First words', 'Pincer grasp', 'Wave goodbye'];
   }
+
+  List<ActivityModel> _fallback(int ageMonths) {
+    return _hardcoded()
+        .where((a) => ageMonths >= a.ageMinMonths && ageMonths <= a.ageMaxMonths)
+        .toList();
+  }
+
+  List<ActivityModel> _hardcoded() => [
+        ActivityModel(id: _uuid.v4(), title: 'Tummy Time', description: 'Place baby on tummy for 2–3 minutes to strengthen neck muscles.', ageMinMonths: 0, ageMaxMonths: 6, category: 'Motor', durationMinutes: 10, materials: ['Play mat'], benefits: ['Neck strength', 'Prevents flat head']),
+        ActivityModel(id: _uuid.v4(), title: 'High-Contrast Card Gazing', description: 'Show black-and-white patterns 20–30 cm from face.', ageMinMonths: 0, ageMaxMonths: 3, category: 'Cognitive', durationMinutes: 5, materials: ['High-contrast cards'], benefits: ['Visual development', 'Focus']),
+        ActivityModel(id: _uuid.v4(), title: 'Talking and Singing', description: 'Narrate daily activities and sing nursery rhymes.', ageMinMonths: 0, ageMaxMonths: 6, category: 'Language', durationMinutes: 20, materials: [], benefits: ['Language foundation', 'Bonding']),
+        ActivityModel(id: _uuid.v4(), title: 'Peekaboo', description: 'Cover your face then reveal with "Peekaboo!"', ageMinMonths: 3, ageMaxMonths: 9, category: 'Social', durationMinutes: 10, materials: [], benefits: ['Object permanence', 'Social bonding']),
+        ActivityModel(id: _uuid.v4(), title: 'Water Play', description: 'Let baby splash and explore during bath time.', ageMinMonths: 3, ageMaxMonths: 9, category: 'Cognitive', durationMinutes: 15, materials: ['Bath toys'], benefits: ['Sensory exploration']),
+        ActivityModel(id: _uuid.v4(), title: 'Stacking Cups', description: 'Show how to stack and knock down colourful cups.', ageMinMonths: 6, ageMaxMonths: 12, category: 'Cognitive', durationMinutes: 20, materials: ['Stacking cups'], benefits: ['Problem solving', 'Fine motor']),
+        ActivityModel(id: _uuid.v4(), title: 'Simple Ball Roll', description: 'Roll a soft ball between you and your baby.', ageMinMonths: 8, ageMaxMonths: 12, category: 'Social', durationMinutes: 15, materials: ['Soft ball'], benefits: ['Turn-taking', 'Coordination']),
+        ActivityModel(id: _uuid.v4(), title: 'Shape Sorter', description: 'Introduce a shape sorter with 3–4 basic shapes.', ageMinMonths: 12, ageMaxMonths: 24, category: 'Cognitive', durationMinutes: 20, materials: ['Shape sorter'], benefits: ['Shape recognition', 'Problem solving']),
+        ActivityModel(id: _uuid.v4(), title: 'Dance Party', description: 'Dance to upbeat children\'s songs together!', ageMinMonths: 12, ageMaxMonths: 36, category: 'Motor', durationMinutes: 20, materials: ['Music'], benefits: ['Coordination', 'Rhythm']),
+        ActivityModel(id: _uuid.v4(), title: 'Puzzle Time', description: 'Large 4–6 piece wooden puzzles.', ageMinMonths: 24, ageMaxMonths: 36, category: 'Cognitive', durationMinutes: 20, materials: ['Wooden puzzle'], benefits: ['Spatial reasoning', 'Problem solving']),
+        ActivityModel(id: _uuid.v4(), title: 'Simple Baking', description: 'Let your child help measure and stir.', ageMinMonths: 36, ageMaxMonths: 60, category: 'Cognitive', durationMinutes: 45, materials: ['Baking ingredients'], benefits: ['Maths concepts', 'Independence']),
+        ActivityModel(id: _uuid.v4(), title: 'Building Challenges', description: 'Build towers and bridges with blocks.', ageMinMonths: 36, ageMaxMonths: 60, category: 'Cognitive', durationMinutes: 30, materials: ['Blocks'], benefits: ['Engineering thinking', 'Creativity']),
+      ];
 }
