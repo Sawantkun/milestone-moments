@@ -36,10 +36,12 @@ class UserModel {
 
   factory UserModel.fromJson(Map<String, dynamic> json) {
     return UserModel(
-      id: json['id'] as String,
-      name: json['name'] as String,
-      email: json['email'] as String,
-      createdAt: DateTime.parse(json['createdAt'] as String),
+      id: (json['id'] as String?) ?? '',
+      name: (json['name'] as String?) ?? '',
+      email: (json['email'] as String?) ?? '',
+      createdAt: json['createdAt'] != null
+          ? DateTime.tryParse(json['createdAt'] as String) ?? DateTime.now()
+          : DateTime.now(),
     );
   }
 

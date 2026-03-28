@@ -23,6 +23,7 @@ class _ActivitiesScreenState extends State<ActivitiesScreen> {
   final AiService _aiService = AiService();
   List<ActivityModel> _activities = [];
   String? _selectedCategory;
+  bool _isLoading = false;
 
   @override
   void didChangeDependencies() {
@@ -30,13 +31,20 @@ class _ActivitiesScreenState extends State<ActivitiesScreen> {
     _loadActivities();
   }
 
-  void _loadActivities() {
+  Future<void> _loadActivities() async {
     final child = widget.embeddedChild ?? context.read<ChildProvider>().selectedChild;
     if (child == null) return;
     setState(() {
-      _activities = _aiService.getActivitiesForAge(child.ageInMonths);
+      _isLoading = true;
       _selectedCategory = null;
     });
+    final activities = await _aiService.getActivitiesForAge(child.ageInMonths);
+    if (mounted) {
+      setState(() {
+        _activities = activities;
+        _isLoading = false;
+      });
+    }
   }
 
   List<String> get _categories {
@@ -61,7 +69,9 @@ class _ActivitiesScreenState extends State<ActivitiesScreen> {
             title: 'No child selected',
             subtitle: 'Select a child to see AI-powered activity suggestions',
           )
-        : _buildContent(context, child);
+        : _isLoading
+            ? const Center(child: CircularProgressIndicator())
+            : _buildContent(context, child);
 
     if (isEmbedded) return body;
 

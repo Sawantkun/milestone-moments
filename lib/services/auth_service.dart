@@ -34,12 +34,20 @@ class AuthService {
       email: email,
       password: password,
     );
-    final doc = await _db.collection('users').doc(credential.user!.uid).get();
-    if (doc.exists) {
-      return UserModel.fromJson(doc.data()!);
-    }
+    final uid = credential.user!.uid;
+    try {
+      final doc = await _db.collection('users').doc(uid).get();
+      if (doc.exists && doc.data() != null) {
+        final user = UserModel.fromJson(doc.data()!);
+        // If id is empty (legacy doc), patch it with the real uid
+        if (user.id.isEmpty) {
+          return user.copyWith(id: uid, email: credential.user!.email ?? email);
+        }
+        return user;
+      }
+    } catch (_) {}
     return UserModel(
-      id: credential.user!.uid,
+      id: uid,
       name: credential.user!.displayName ?? '',
       email: credential.user!.email ?? email,
       createdAt: DateTime.now(),
